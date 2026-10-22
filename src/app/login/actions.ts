@@ -3,6 +3,7 @@
 import { redirect } from 'next/navigation';
 import { createSession, destroySession } from '@/lib/auth';
 import { hashPassword, verifyPassword } from '@/lib/password';
+import { isSessionConfigured, SESSION_CONFIG_ERROR } from '@/lib/session';
 import { DB_ERROR, field, FormState, newPasswordError, readUsername, safeNext, usernameError } from '@/lib/userForm';
 import { countUsers, findUserByUsername, insertUser, touchLastLogin, UserRecord } from '@/lib/users';
 
@@ -28,6 +29,7 @@ export async function login(_prev: FormState, fd: FormData): Promise<FormState> 
   const username = readUsername(fd);
   const password = String(fd.get('password') ?? '');
   if (!username || !password) return { error: 'Username dan password wajib diisi.' };
+  if (!isSessionConfigured()) return { error: SESSION_CONFIG_ERROR };
 
   const locked = lockedMinutes(username);
   if (locked) return { error: `Terlalu banyak percobaan gagal. Coba lagi dalam ${locked} menit.` };
@@ -58,6 +60,8 @@ export async function setupFirstAdmin(_prev: FormState, fd: FormData): Promise<F
   const nama = field(fd, 'nama');
   const error = usernameError(username) ?? (nama ? null : 'Nama wajib diisi.') ?? newPasswordError(fd);
   if (error) return { error };
+  // Cek sebelum membuat akun, agar tidak ada akun yang tersimpan tapi gagal login.
+  if (!isSessionConfigured()) return { error: SESSION_CONFIG_ERROR };
 
   let user: UserRecord | null;
   try {

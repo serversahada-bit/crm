@@ -11,10 +11,16 @@ export interface SessionPayload {
   exp: number; // unix detik
 }
 
+export const SESSION_CONFIG_ERROR =
+  'Konfigurasi server belum lengkap: SESSION_SECRET belum diisi (minimal 16 karakter) di .env.local / Environment Variables server.';
+
+export function isSessionConfigured(): boolean {
+  return (process.env.SESSION_SECRET ?? '').length >= 16;
+}
+
 function secret(): string {
-  const s = process.env.SESSION_SECRET;
-  if (!s || s.length < 16) throw new Error('SESSION_SECRET belum diisi di .env.local (minimal 16 karakter).');
-  return s;
+  if (!isSessionConfigured()) throw new Error(SESSION_CONFIG_ERROR);
+  return process.env.SESSION_SECRET!;
 }
 
 function sign(data: string): string {
