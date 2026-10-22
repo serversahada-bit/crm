@@ -175,3 +175,9 @@
 .profile-list dt { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
 .profile-list dd { font-weight: 600; }
 @media (max-width: 1100px) { .grid-users { grid-template-columns: 1fr; } }
+
+/* Logo PT Sahada Laku Utama */
+.brand-logo { width: 40px; height: 40px; flex-shrink: 0; object-fit: contain; }
+.auth-brand { display: flex; flex-direction: column; align-items: center; gap: 0.6rem; margin-bottom: 0.5rem; }
+.auth-logo { width: auto; height: 120px; }
+.auth-app-name { font-size: 0.8rem; font-weight: 800; letter-spacing: 0.12em; color: var(--primary-text); text-transform: uppercase; }

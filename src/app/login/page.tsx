@@ -2,7 +2,8 @@ import { Suspense } from 'react';
 import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
 import { connection } from 'next/server';
-import { Milk } from 'lucide-react';
+import Image from 'next/image';
+import sahadaLogo from '@/assets/brand/sahada-logo.png';
 import { getCurrentUser } from '@/lib/auth';
 import { param, SearchParams } from '@/lib/params';
 import { DB_ERROR, safeNext } from '@/lib/userForm';
@@ -15,14 +16,9 @@ export default function LoginPage({ searchParams }: { searchParams: Promise<Sear
   return (
     <div className="auth-page">
       <div className="auth-card">
-        <div className="brand-wrapper auth-brand">
-          <div className="brand-icon">
-            <Milk size={20} />
-          </div>
-          <div className="brand-text">
-            <span className="brand-name">CRM PTSLU</span>
-            <span className="brand-badge">Customer Analytics</span>
-          </div>
+        <div className="auth-brand">
+          <Image src={sahadaLogo} alt="PT Sahada Laku Utama" className="auth-logo" priority />
+          <span className="auth-app-name">CRM PTSLU</span>
         </div>
         <Suspense fallback={<div className="spinner auth-spinner" />}>
           <LoginContent searchParams={searchParams} />

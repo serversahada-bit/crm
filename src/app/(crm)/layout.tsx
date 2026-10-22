@@ -1,5 +1,7 @@
 import { Suspense } from "react";
-import { Milk, RefreshCw } from "lucide-react";
+import Image from "next/image";
+import { RefreshCw } from "lucide-react";
+import sahadaMark from "@/assets/brand/sahada-mark.png";
 import { ActiveNavLinks, NavLinks } from "@/components/NavLinks";
 import { MobileNavToggle, NavBackdrop, ThemeToggle } from "@/components/ShellControls";
 import { DataFreshness } from "@/components/DataFreshness";
@@ -12,12 +14,10 @@ export default function CrmLayout({ children }: { children: React.ReactNode }) {
       <aside className="sidebar">
         <div className="sidebar-header">
           <div className="brand-wrapper">
-            <div className="brand-icon">
-              <Milk size={20} />
-            </div>
+            <Image src={sahadaMark} alt="Logo PT Sahada Laku Utama" className="brand-logo" width={40} height={40} priority />
             <div className="brand-text">
               <span className="brand-name">CRM PTSLU</span>
-              <span className="brand-badge">Customer Analytics</span>
+              <span className="brand-badge">PT Sahada Laku Utama</span>
             </div>
           </div>
         </div>
