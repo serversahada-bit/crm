@@ -2,10 +2,15 @@
 
 import { refresh } from 'next/cache';
 import { requireUser } from '@/lib/auth';
-import { invalidateDataset } from '@/lib/dataset';
+import { reloadDataset } from '@/lib/dataset';
 
 export async function reloadData() {
   await requireUser();
-  invalidateDataset();
+  try {
+    await reloadDataset();
+  } catch (err) {
+    // Database sedang tidak bisa diakses: tetap tampilkan data terakhir yang berhasil dimuat.
+    console.error('[crm] Muat ulang data gagal:', err);
+  }
   refresh();
 }

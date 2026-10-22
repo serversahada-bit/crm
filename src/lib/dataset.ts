@@ -129,18 +129,28 @@ function orderDate(timeStamp: unknown, tanggalProses: unknown): string {
   return valid(timeStamp) || valid(tanggalProses);
 }
 
+/** Jalankan query dan proses hasilnya baris per baris, tanpa menampung ratusan ribu baris sekaligus di memori. */
+function streamRows(sql: string, params: unknown[], onRow: (row: RowDataPacket) => void): Promise<number> {
+  return new Promise((resolve, reject) => {
+    let count = 0;
+    // pool.pool = pool inti mysql2 (API callback) yang mendukung .stream(); koneksi diambil & dikembalikan otomatis.
+    const stream = pool.pool.query(sql, params).stream({ highWaterMark: 5000 });
+    stream.on('data', (row: RowDataPacket) => {
+      try {
+        onRow(row);
+        count++;
+      } catch (err) {
+        stream.destroy();
+        reject(err);
+      }
+    });
+    stream.on('end', () => resolve(count));
+    stream.on('error', reject);
+  });
+}
+
 async function loadFromDb(): Promise<Dataset> {
   const today = new Date().toISOString().slice(0, 10);
-  const [rows] = await pool.query<RowDataPacket[]>(
-    // Tanggal dipilih di JS, bukan dengan literal '0000-00-00' di SQL: MySQL 8 (mode NO_ZERO_DATE) menolak literal itu.
-    `SELECT kode_booking, time_stamp, tanggal_proses,
-            contack, first_name, kota, provinsi, barang, barang_1, LEFT(isi_paket, 40) AS isi,
-            total_harga, jumlah, jumlah_1, cs, adv, LEFT(keterangan, 60) AS ket, tipe_pembayaran,
-            LEFT(status, 60) AS status
-       FROM data_transaksi
-      WHERE time_stamp >= ? OR tanggal_proses >= ?`,
-    [START_DATE, START_DATE],
-  );
 
   // String yang sering berulang (kota, CS, channel) di-intern agar hemat memori.
   const interned = new Map<string, string>();
@@ -153,11 +163,11 @@ async function loadFromDb(): Promise<Dataset> {
 
   const orders: Order[] = [];
   const monthly = new Map<number, MonthTotals>();
-  const totals = { rows: rows.length, valid: 0, cancelled: 0, masked: 0, omzet: 0 };
+  const totals = { rows: 0, valid: 0, cancelled: 0, masked: 0, omzet: 0 };
 
-  for (const row of rows) {
+  const handleRow = (row: RowDataPacket) => {
     const date = orderDate(row.time_stamp, row.tanggal_proses);
-    if (date < START_DATE || date > today) continue;
+    if (date < START_DATE || date > today) return;
     const month = monthIndex(date);
     let m = monthly.get(month);
     if (!m) monthly.set(month, (m = { month, orders: 0, omzet: 0, cancelled: 0 }));
@@ -165,7 +175,7 @@ async function loadFromDb(): Promise<Dataset> {
     if (isCancelled(row.status)) {
       totals.cancelled++;
       m.cancelled++;
-      continue;
+      return;
     }
     const total = parseRupiah(row.total_harga);
     totals.valid++;
@@ -176,7 +186,7 @@ async function loadFromDb(): Promise<Dataset> {
     const phone = normalizePhone(row.contack);
     if (!phone) {
       totals.masked++;
-      continue;
+      return;
     }
     orders.push({
       id: row.kode_booking,
@@ -193,7 +203,19 @@ async function loadFromDb(): Promise<Dataset> {
       cs: intern(csOf(row)),
       channel: intern(classifyChannel(row.ket, row.tipe_pembayaran, row.adv)),
     });
-  }
+  };
+
+  totals.rows = await streamRows(
+    // Tanggal dipilih di JS, bukan dengan literal '0000-00-00' di SQL: MySQL 8 (mode NO_ZERO_DATE) menolak literal itu.
+    `SELECT kode_booking, time_stamp, tanggal_proses,
+            contack, first_name, kota, provinsi, barang, barang_1, LEFT(isi_paket, 40) AS isi,
+            total_harga, jumlah, jumlah_1, cs, adv, LEFT(keterangan, 60) AS ket, tipe_pembayaran,
+            LEFT(status, 60) AS status
+       FROM data_transaksi
+      WHERE time_stamp >= ? OR tanggal_proses >= ?`,
+    [START_DATE, START_DATE],
+    handleRow,
+  );
   orders.sort((a, b) => a.day - b.day);
 
   const [customerRows] = await pool.query<RowDataPacket[]>(
@@ -219,7 +241,7 @@ async function loadFromDb(): Promise<Dataset> {
   }
 
   const refDate = orders.length ? orders[orders.length - 1].date : today;
-  return {
+  const ds: Dataset = {
     loadedAt: new Date(),
     refDate,
     refDay: toDay(refDate),
@@ -230,29 +252,71 @@ async function loadFromDb(): Promise<Dataset> {
     views: new Map(),
     ordersByPhone,
   };
+  // Filter default & "semua produk" dihitung sekarang agar halaman pertama tidak perlu menunggu.
+  for (const filter of [DEFAULT_PRODUCT_FILTER, 'all']) ds.views.set(filter, buildView(ds, filter));
+  return ds;
 }
 
-const cache = globalThis as unknown as { crmDataset?: { data: Promise<Dataset>; at: number; loader: typeof loadFromDb } };
+interface DatasetCache {
+  current?: Dataset; // data terakhir yang berhasil dimuat
+  loading?: Promise<Dataset>; // pemuatan ulang yang sedang berjalan
+  loader: typeof loadFromDb;
+}
 
-/** Data seluruh order, dimuat dari DB maksimal sekali per CACHE_TTL_MS. */
+const store = globalThis as unknown as { crmDataset?: DatasetCache };
+
+function cacheState(): DatasetCache {
+  // Saat dev, loader berbeda = kode ini baru di-hot-reload, jadi data lama dibuang. Tidak dicek di produksi:
+  // instrumentation.ts dan halaman bisa memuat modul ini sebagai instance terpisah, tapi berbagi cache yang sama.
+  const stale = process.env.NODE_ENV !== 'production' && store.crmDataset?.loader !== loadFromDb;
+  if (!store.crmDataset || stale) store.crmDataset = { loader: loadFromDb };
+  return store.crmDataset;
+}
+
+/** Muat ulang dari DB (paling banyak satu proses sekaligus). Data lama tetap dipakai sampai selesai. */
+function startReload(): Promise<Dataset> {
+  const state = cacheState();
+  state.loading ??= loadFromDb()
+    .then((ds) => {
+      state.current = ds;
+      return ds;
+    })
+    .finally(() => {
+      state.loading = undefined;
+    });
+  return state.loading;
+}
+
+/**
+ * Data seluruh order. Hanya pemuatan pertama sejak server menyala yang perlu ditunggu;
+ * setelah CACHE_TTL_MS data diperbarui di latar belakang sambil tetap menyajikan data sebelumnya.
+ */
+async function ensureDataset(): Promise<Dataset> {
+  const { current } = cacheState();
+  if (!current) return startReload();
+  if (Date.now() - current.loadedAt.getTime() > CACHE_TTL_MS) {
+    startReload().catch((err) => console.error('[crm] Gagal memperbarui data, tetap memakai data sebelumnya:', err));
+  }
+  return current;
+}
+
 export async function getDataset(): Promise<Dataset> {
   await connection();
   await requireUser(); // semua data customer hanya untuk user yang login
-  const now = Date.now();
-  // loader berbeda = kode ini baru di-hot-reload saat dev, jadi hasil lama dibuang.
-  if (!cache.crmDataset || now - cache.crmDataset.at > CACHE_TTL_MS || cache.crmDataset.loader !== loadFromDb) {
-    const data = loadFromDb();
-    cache.crmDataset = { data, at: now, loader: loadFromDb };
-    data.catch(() => {
-      if (cache.crmDataset?.data === data) cache.crmDataset = undefined;
-    });
-  }
-  return cache.crmDataset.data;
+  return ensureDataset();
 }
 
-/** Paksa muat ulang dari database pada request berikutnya. */
-export function invalidateDataset() {
-  cache.crmDataset = undefined;
+/** Dipanggil saat server menyala (src/instrumentation.ts) agar data siap sebelum ada yang membuka halaman. */
+export function warmDataset() {
+  const started = Date.now();
+  startReload()
+    .then((ds) => console.log(`[crm] Data siap: ${ds.totals.valid} order dalam ${Date.now() - started} ms`))
+    .catch((err) => console.error('[crm] Pemanasan data gagal, akan dicoba lagi saat halaman dibuka:', err));
+}
+
+/** Tombol "Muat ulang data": tunggu sampai data terbaru selesai dimuat. */
+export async function reloadDataset() {
+  await startReload();
 }
 
 function statusOf(recency: number): CustomerStatus {
