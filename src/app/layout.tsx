@@ -30,7 +30,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="id" className={`${geistSans.variable} ${geistMono.variable}`} data-theme="dark">
+    <html lang="id" className={`${geistSans.variable} ${geistMono.variable}`} data-theme="light">
       <body>
         <div className="app-layout">
           <aside className="sidebar">
@@ -65,7 +65,6 @@ export default function RootLayout({
             <header className="top-navbar">
               <div className="navbar-left">
                 <MobileNavToggle />
-                <span className="navbar-caption">Sumber: database <code>dataslu</code> (XAMPP)</span>
               </div>
               <div className="navbar-right">
                 <form action={reloadData}>
