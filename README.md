@@ -11,6 +11,15 @@ menggantikan pengelolaan data customer manual.
 
 Data dimuat dari DB lalu disimpan di memori server selama 10 menit. Tombol **Muat ulang data** memaksa ambil ulang.
 
+## Login
+
+- Akun disimpan di tabel **`login_crm`** (database `dataslu`), dibuat otomatis saat aplikasi pertama kali dibuka.
+- Saat tabel masih kosong, halaman `/login` menampilkan form **Buat akun admin pertama**.
+- Admin menambah akun CS/admin lain lewat menu **Pengguna**; tiap user bisa ganti password di **Akun Saya** (klik nama di sidebar).
+- `.env.local` wajib berisi `SESSION_SECRET` (acak, min. 16 karakter) untuk menandatangani cookie login.
+- Password disimpan sebagai hash scrypt. Salah password 5x → username dikunci 5 menit.
+  Akun yang dinonaktifkan atau diganti password-nya otomatis keluar dari semua perangkat.
+
 ## Menu
 
 | Menu | Isi |
@@ -21,6 +30,7 @@ Data dimuat dari DB lalu disimpan di memori server selama 10 menit. Tombol **Mua
 | Analisa RFM | 11 segmen RFM + saran tindakan, peta Recency x Frequency |
 | Analisa Cohort | Tabel retensi per bulan pertama beli, kurva retensi, berapa lama customer bertahan |
 | Reminder RO | Customer yang sudah waktunya beli lagi + tombol WhatsApp |
+| Pengguna (admin) | Tambah akun, ubah peran & nama CS, reset password, nonaktifkan akun |
 
 ## Aturan data (lihat `src/lib/config.ts` dan `src/lib/normalize.ts`)
 
@@ -36,4 +46,6 @@ Data dimuat dari DB lalu disimpan di memori server selama 10 menit. Tombol **Mua
 - `src/lib/dataset.ts`: memuat & membersihkan data, profil customer, skor RFM
 - `src/lib/cohort.ts`: retensi cohort & lama bertahan
 - `src/lib/rfm.ts`: definisi segmen
-- `src/app/*`: halaman (Server Components, filter lewat URL)
+- `src/lib/auth.ts`, `session.ts`, `users.ts`, `password.ts`: login & akun
+- `src/proxy.ts`: mengalihkan request tanpa login ke `/login`
+- `src/app/(crm)/*`: halaman CRM (Server Components, filter lewat URL); `src/app/login`: halaman login

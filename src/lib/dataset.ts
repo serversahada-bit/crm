@@ -1,5 +1,6 @@
 import { connection } from 'next/server';
 import type { RowDataPacket } from 'mysql2';
+import { requireUser } from './auth';
 import { pool } from './db';
 import { ASSUME_GAMAMILK_BEFORE, CACHE_TTL_MS, START_DATE, STATUS_RULES } from './config';
 import {
@@ -229,6 +230,7 @@ const cache = globalThis as unknown as { crmDataset?: { data: Promise<Dataset>; 
 /** Data seluruh order, dimuat dari DB maksimal sekali per CACHE_TTL_MS. */
 export async function getDataset(): Promise<Dataset> {
   await connection();
+  await requireUser(); // semua data customer hanya untuk user yang login
   const now = Date.now();
   // loader berbeda = kode ini baru di-hot-reload saat dev, jadi hasil lama dibuang.
   if (!cache.crmDataset || now - cache.crmDataset.at > CACHE_TTL_MS || cache.crmDataset.loader !== loadFromDb) {

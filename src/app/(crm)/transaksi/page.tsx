@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { connection } from 'next/server';
 import type { RowDataPacket } from 'mysql2';
 import { Search } from 'lucide-react';
+import { requireUser } from '@/lib/auth';
 import { START_DATE } from '@/lib/config';
 import { pool } from '@/lib/db';
 import { classifyChannel, classifyProduct, isCancelled, normalizePhone, parseRupiah, PRODUCT_LABEL } from '@/lib/normalize';
@@ -28,6 +29,7 @@ export default function TransaksiPage({ searchParams }: { searchParams: Promise<
 
 async function Transaksi({ searchParams }: { searchParams: Promise<SearchParams> }) {
   await connection();
+  await requireUser();
   const sp = await searchParams;
   const q = param(sp, 'q');
   const dari = param(sp, 'dari');
