@@ -8,10 +8,11 @@ export default function Error({ error, reset }: { error: Error & { digest?: stri
       <DatabaseZap size={36} />
       <h2>Data tidak bisa dimuat</h2>
       <p>
-        Pastikan <strong>MySQL di XAMPP Control Panel sudah Start</strong> dan pengaturan di file <code>.env.local</code> sudah benar
-        (DB_HOST, DB_USER, DB_PASSWORD, DB_NAME).
+        Pastikan database MySQL menyala dan bisa diakses, dan pengaturan DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME sudah benar
+        (di <code>.env.local</code> untuk lokal, atau Environment Variables di server).
       </p>
-      <pre>{error.message}</pre>
+      {/* Di mode produksi pesan asli disembunyikan; kode digest dipakai untuk mencarinya di log server. */}
+      <pre>{error.digest ? `Kode error: ${error.digest} (cari kode ini di log server)` : error.message}</pre>
       <button className="btn-primary-gradient" onClick={reset}>
         Coba lagi
       </button>

@@ -123,10 +123,17 @@ function csOf(row: RowDataPacket): string {
   return /^[a-z]/i.test(cs) ? titleCase(cs) : '-';
 }
 
+/** time_stamp, atau tanggal_proses bila time_stamp kosong / tanggal nol. Hasil YYYY-MM-DD atau ''. */
+function orderDate(timeStamp: unknown, tanggalProses: unknown): string {
+  const valid = (v: unknown) => (typeof v === 'string' && !v.startsWith('0000') ? v.slice(0, 10) : '');
+  return valid(timeStamp) || valid(tanggalProses);
+}
+
 async function loadFromDb(): Promise<Dataset> {
   const today = new Date().toISOString().slice(0, 10);
   const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT kode_booking, COALESCE(NULLIF(time_stamp, '0000-00-00 00:00:00'), tanggal_proses) AS tgl,
+    // Tanggal dipilih di JS, bukan dengan literal '0000-00-00' di SQL: MySQL 8 (mode NO_ZERO_DATE) menolak literal itu.
+    `SELECT kode_booking, time_stamp, tanggal_proses,
             contack, first_name, kota, provinsi, barang, barang_1, LEFT(isi_paket, 40) AS isi,
             total_harga, jumlah, jumlah_1, cs, adv, LEFT(keterangan, 60) AS ket, tipe_pembayaran,
             LEFT(status, 60) AS status
@@ -149,7 +156,7 @@ async function loadFromDb(): Promise<Dataset> {
   const totals = { rows: rows.length, valid: 0, cancelled: 0, masked: 0, omzet: 0 };
 
   for (const row of rows) {
-    const date = typeof row.tgl === 'string' ? row.tgl.slice(0, 10) : '';
+    const date = orderDate(row.time_stamp, row.tanggal_proses);
     if (date < START_DATE || date > today) continue;
     const month = monthIndex(date);
     let m = monthly.get(month);

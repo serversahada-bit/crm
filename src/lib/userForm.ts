@@ -34,4 +34,4 @@ export function safeNext(raw: string): string {
   return raw.startsWith('/') && !raw.startsWith('//') && !raw.startsWith('/login') ? raw : '/';
 }
 
-export const DB_ERROR = 'Database tidak bisa diakses. Pastikan MySQL di XAMPP Control Panel sudah Start.';
+export const DB_ERROR = 'Database tidak bisa diakses. Pastikan MySQL menyala dan pengaturan DB_* di .env.local / Environment Variables server benar.';
