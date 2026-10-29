@@ -2,11 +2,12 @@ import { connection } from 'next/server';
 import type { RowDataPacket } from 'mysql2';
 import { requireUser } from './auth';
 import { pool } from './db';
-import { ASSUME_GAMAMILK_BEFORE, CACHE_TTL_MS, START_DATE, STATUS_RULES } from './config';
+import { ASSUME_GAMAMILK_BEFORE, CACHE_TTL_MS, NON_CUSTOMER_CS, NON_CUSTOMER_CS_PREFIX, START_DATE, STATUS_RULES } from './config';
 import {
   classifyChannel,
   classifyProduct,
   cleanText,
+  CustomerSource,
   DEFAULT_PRODUCT_FILTER,
   isCancelled,
   normalizePhone,
@@ -14,8 +15,11 @@ import {
   parseRupiah,
   PRODUCT_FILTERS,
   ProductCode,
+  sourceOfChannel,
   titleCase,
 } from './normalize';
+import { Assignment, distributeNewCustomers, loadAssignments } from './pembagian';
+import { loadFailedDeliveries, ReturInfo, ReturKind } from './retur';
 import { quintileBreaks, scoreByBreaks, scoreFrequency, scoreRecency, segmentOf, SegmentId } from './rfm';
 
 export interface Order {
@@ -34,11 +38,29 @@ export interface Order {
   channel: string;
 }
 
+/** Order yang paketnya retur / gagal kirim menurut tabel tracking. Tidak dihitung sebagai pembelian. */
+export interface ReturOrder {
+  id: string;
+  date: string;
+  day: number;
+  month: number;
+  phone: string;
+  name: string;
+  kota: string;
+  product: ProductCode;
+  total: number;
+  cs: string;
+  channel: string;
+  kind: ReturKind;
+  reason: string;
+}
+
 export interface MonthTotals {
   month: number;
   orders: number; // semua order valid (termasuk no. HP disamarkan)
   omzet: number;
   cancelled: number;
+  retur: number;
 }
 
 export type CustomerStatus = 'Aktif' | 'Pasif' | 'Churn';
@@ -48,7 +70,7 @@ export interface Customer {
   name: string;
   kota: string;
   provinsi: string;
-  crm: string;
+  crm: string; // CRM hasil pembagian, atau kolom crm di data_customer
   firstDate: string;
   lastDate: string;
   firstMonth: number;
@@ -60,6 +82,8 @@ export interface Customer {
   lastProduct: ProductCode;
   lastCs: string;
   firstChannel: string;
+  source: CustomerSource;
+  returs: number; // jumlah order retur / gagal kirim (semua produk)
   avgInterval: number | null; // rata-rata hari antar order
   recency: number; // hari sejak order terakhir
   lifetime: number; // hari dari order pertama ke terakhir
@@ -79,19 +103,28 @@ interface Profile {
 
 export interface CustomerView {
   filter: string;
-  orders: Order[]; // order milik produk yang difilter, urut tanggal
+  year: number | null; // RFM per tahun: hanya order tahun tsb, dinilai per akhir tahun
+  orders: Order[]; // order milik produk (dan tahun) yang difilter, urut tanggal
   customers: Customer[];
   byPhone: Map<string, Customer>;
+  cache: Map<string, unknown>; // hasil hitungan halaman, berlaku sampai data dimuat ulang (lihat memo)
 }
 
 export interface Dataset {
   loadedAt: Date;
+  lastUpload: string | null; // waktu upload data terakhir (YYYY-MM-DD HH:MM:SS), lihat lastUploadAt
   refDate: string; // tanggal order terakhir di data, dipakai sebagai "hari ini" analisa
   refDay: number;
   orders: Order[]; // order valid dengan no. HP yang bisa diidentifikasi
   monthly: MonthTotals[];
-  totals: { rows: number; valid: number; cancelled: number; masked: number; omzet: number };
+  totals: { rows: number; valid: number; cancelled: number; retur: number; nonCustomer: number; masked: number; omzet: number };
+  returns: ReturOrder[]; // order retur / gagal kirim dengan no. HP teridentifikasi, urut tanggal
+  returnsByPhone: Map<string, ReturOrder[]>;
+  failedDeliveries: Map<string, ReturInfo>; // resi retur / gagal kirim dari tabel tracking
+  failedRows: { id: number; time: string }[]; // baris data_transaksi yang resinya retur, time_stamp terbaru dulu
+  rowIdsByPhone: Map<string, number[]>; // id baris data_transaksi per no. HP (semua status), untuk pencarian cepat
   profiles: Map<string, Profile>;
+  assignments: Map<string, Assignment>; // pembagian customer ke CRM, per no. HP
   views: Map<string, CustomerView>;
   ordersByPhone: Map<string, Order[]>;
 }
@@ -123,6 +156,14 @@ function csOf(row: RowDataPacket): string {
   return /^[a-z]/i.test(cs) ? titleCase(cs) : '-';
 }
 
+/** Order endorse / giveaway / internal, dikenali dari nama CS-nya (lihat NON_CUSTOMER_CS di config). */
+function isNonCustomerCs(cs: string): boolean {
+  const lower = cs.toLowerCase();
+  return (
+    NON_CUSTOMER_CS_PREFIX.some((p) => lower.startsWith(p)) || lower.split(/[^a-z]+/).some((w) => NON_CUSTOMER_CS.includes(w))
+  );
+}
+
 /** time_stamp, atau tanggal_proses bila time_stamp kosong / tanggal nol. Hasil YYYY-MM-DD atau ''. */
 function orderDate(timeStamp: unknown, tanggalProses: unknown): string {
   const valid = (v: unknown) => (typeof v === 'string' && !v.startsWith('0000') ? v.slice(0, 10) : '');
@@ -149,6 +190,31 @@ function streamRows(sql: string, params: unknown[], onRow: (row: RowDataPacket) 
   });
 }
 
+/** Waktu upload / sinkronisasi data terakhir dari file_upload_sheet & waktu_cron. null bila tidak tercatat. */
+async function lastUploadAt(): Promise<string | null> {
+  try {
+    const [[row]] = await pool.query<RowDataPacket[]>(
+      `SELECT GREATEST(COALESCE((SELECT MAX(tgl_upload) FROM file_upload_sheet), '1970-01-01 00:00:00'),
+                       COALESCE((SELECT MAX(TIMESTAMP(tgl_cron, jam_cron)) FROM waktu_cron), '1970-01-01 00:00:00')) AS t`,
+    );
+    const t = String(row?.t ?? '');
+    return t && !t.startsWith('1970') ? t.slice(0, 19) : null;
+  } catch (err) {
+    console.error('[crm] Gagal membaca waktu upload terakhir:', err);
+    return null;
+  }
+}
+
+function groupByPhone<T extends { phone: string }>(rows: T[]): Map<string, T[]> {
+  const grouped = new Map<string, T[]>();
+  for (const row of rows) {
+    const list = grouped.get(row.phone);
+    if (list) list.push(row);
+    else grouped.set(row.phone, [row]);
+  }
+  return grouped;
+}
+
 async function loadFromDb(): Promise<Dataset> {
   const today = new Date().toISOString().slice(0, 10);
 
@@ -161,16 +227,34 @@ async function loadFromDb(): Promise<Dataset> {
     return s;
   };
 
+  const failedByResi = await loadFailedDeliveries();
   const orders: Order[] = [];
+  const returns: ReturOrder[] = [];
   const monthly = new Map<number, MonthTotals>();
-  const totals = { rows: 0, valid: 0, cancelled: 0, masked: 0, omzet: 0 };
+  const totals = { rows: 0, valid: 0, cancelled: 0, retur: 0, nonCustomer: 0, masked: 0, omzet: 0 };
+
+  const rowIdsByPhone = new Map<string, number[]>();
+  const failedRows: Dataset['failedRows'] = [];
 
   const handleRow = (row: RowDataPacket) => {
-    const date = orderDate(row.time_stamp, row.tanggal_proses);
-    if (date < START_DATE || date > today) return;
+    if (row.resi && failedByResi.has(row.resi)) failedRows.push({ id: row.id, time: String(row.time_stamp ?? '') });
+    const phone = normalizePhone(row.contack);
+    if (phone) {
+      const ids = rowIdsByPhone.get(phone);
+      if (ids) ids.push(row.id);
+      else rowIdsByPhone.set(phone, [row.id]);
+    }
+    const rawDate = orderDate(row.time_stamp, row.tanggal_proses);
+    if (rawDate < START_DATE || rawDate > today) return;
+    const date = intern(rawDate); // ±1.400 tanggal unik untuk ratusan ribu order
+    const cs = intern(csOf(row));
+    if (isNonCustomerCs(cs)) {
+      totals.nonCustomer++;
+      return;
+    }
     const month = monthIndex(date);
     let m = monthly.get(month);
-    if (!m) monthly.set(month, (m = { month, orders: 0, omzet: 0, cancelled: 0 }));
+    if (!m) monthly.set(month, (m = { month, orders: 0, omzet: 0, cancelled: 0, retur: 0 }));
 
     if (isCancelled(row.status)) {
       totals.cancelled++;
@@ -178,12 +262,34 @@ async function loadFromDb(): Promise<Dataset> {
       return;
     }
     const total = parseRupiah(row.total_harga);
+    const failed = row.resi ? failedByResi.get(row.resi) : undefined;
+    if (failed) {
+      totals.retur++;
+      m.retur++;
+      if (phone) {
+        returns.push({
+          id: row.kode_booking,
+          date,
+          day: toDay(date),
+          month,
+          phone,
+          name: cleanText(row.first_name),
+          kota: intern(cleanText(row.kota)),
+          product: productOf(row, date),
+          total,
+          cs,
+          channel: intern(classifyChannel(row.ket, row.tipe_pembayaran, row.adv)),
+          kind: failed.kind,
+          reason: intern(failed.reason),
+        });
+      }
+      return;
+    }
     totals.valid++;
     totals.omzet += total;
     m.orders++;
     m.omzet += total;
 
-    const phone = normalizePhone(row.contack);
     if (!phone) {
       totals.masked++;
       return;
@@ -200,14 +306,14 @@ async function loadFromDb(): Promise<Dataset> {
       product: productOf(row, date),
       qty: parseQty(row.jumlah ?? row.jumlah_1),
       total,
-      cs: intern(csOf(row)),
+      cs,
       channel: intern(classifyChannel(row.ket, row.tipe_pembayaran, row.adv)),
     });
   };
 
   totals.rows = await streamRows(
     // Tanggal dipilih di JS, bukan dengan literal '0000-00-00' di SQL: MySQL 8 (mode NO_ZERO_DATE) menolak literal itu.
-    `SELECT kode_booking, time_stamp, tanggal_proses,
+    `SELECT id, kode_booking, resi, time_stamp, tanggal_proses,
             contack, first_name, kota, provinsi, barang, barang_1, LEFT(isi_paket, 40) AS isi,
             total_harga, jumlah, jumlah_1, cs, adv, LEFT(keterangan, 60) AS ket, tipe_pembayaran,
             LEFT(status, 60) AS status
@@ -217,6 +323,8 @@ async function loadFromDb(): Promise<Dataset> {
     handleRow,
   );
   orders.sort((a, b) => a.day - b.day);
+  returns.sort((a, b) => a.day - b.day);
+  failedRows.sort((a, b) => (a.time < b.time ? 1 : a.time > b.time ? -1 : 0));
 
   const [customerRows] = await pool.query<RowDataPacket[]>(
     'SELECT hp_customer, nama_customer, kabupaten, provinsi, crm FROM data_customer',
@@ -233,22 +341,24 @@ async function loadFromDb(): Promise<Dataset> {
     });
   }
 
-  const ordersByPhone = new Map<string, Order[]>();
-  for (const o of orders) {
-    const list = ordersByPhone.get(o.phone);
-    if (list) list.push(o);
-    else ordersByPhone.set(o.phone, [o]);
-  }
+  const ordersByPhone = groupByPhone(orders);
 
   const refDate = orders.length ? orders[orders.length - 1].date : today;
   const ds: Dataset = {
     loadedAt: new Date(),
+    lastUpload: await lastUploadAt(),
     refDate,
     refDay: toDay(refDate),
     orders,
     monthly: [...monthly.values()].sort((a, b) => a.month - b.month),
     totals,
+    returns,
+    returnsByPhone: groupByPhone(returns),
+    failedDeliveries: failedByResi,
+    failedRows,
+    rowIdsByPhone,
     profiles,
+    assignments: await loadAssignments(),
     views: new Map(),
     ordersByPhone,
   };
@@ -277,7 +387,11 @@ function cacheState(): DatasetCache {
 function startReload(): Promise<Dataset> {
   const state = cacheState();
   state.loading ??= loadFromDb()
-    .then((ds) => {
+    .then(async (ds) => {
+      // Customer baru CSO langsung dibagikan ke tim CRM; jika gagal, data tetap dipakai.
+      await distributeNewCustomers(ds).catch((err) => console.error('[crm] Pembagian customer ke CRM gagal:', err));
+      // Ringkasan halaman utama dihitung sebelum data baru dipakai. Diimpor dinamis: summary.ts mengimpor modul ini.
+      (await import('./summary')).warmSummaries(ds);
       state.current = ds;
       return ds;
     })
@@ -338,16 +452,15 @@ function mostCommon(values: string[]): string {
   return best;
 }
 
-function buildView(ds: Dataset, filter: string): CustomerView {
+function buildView(ds: Dataset, filter: string, year: number | null = null): CustomerView {
   const codes = (PRODUCT_FILTERS.find((p) => p.value === filter) ?? PRODUCT_FILTERS[0]).codes;
-  const orders = codes ? ds.orders.filter((o) => codes.includes(o.product)) : ds.orders;
+  const prefix = year ? `${year}-` : '';
+  const orders =
+    codes || year ? ds.orders.filter((o) => (!codes || codes.includes(o.product)) && o.date.startsWith(prefix)) : ds.orders;
+  // Per tahun: Recency dihitung per 31 Desember tahun tsb (atau data terakhir untuk tahun berjalan).
+  const refDay = year ? Math.min(ds.refDay, toDay(`${year}-12-31`)) : ds.refDay;
 
-  const grouped = new Map<string, Order[]>();
-  for (const o of orders) {
-    const list = grouped.get(o.phone);
-    if (list) list.push(o);
-    else grouped.set(o.phone, [o]);
-  }
+  const grouped = groupByPhone(orders);
 
   const customers: Customer[] = [];
   for (const [phone, list] of grouped) {
@@ -356,7 +469,7 @@ function buildView(ds: Dataset, filter: string): CustomerView {
     const first = list[0];
     const last = list[list.length - 1];
     const profile = ds.profiles.get(phone);
-    const recency = ds.refDay - last.day;
+    const recency = refDay - last.day;
     const lifetime = last.day - first.day;
     const name = [...list].reverse().find((o) => o.name)?.name || profile?.name || '(tanpa nama)';
     customers.push({
@@ -364,7 +477,7 @@ function buildView(ds: Dataset, filter: string): CustomerView {
       name,
       kota: last.kota || profile?.kota || mostCommon(list.map((o) => o.kota)),
       provinsi: last.provinsi || profile?.provinsi || '',
-      crm: profile?.crm ?? '',
+      crm: ds.assignments.get(phone)?.crm ?? profile?.crm ?? '',
       firstDate: first.date,
       lastDate: last.date,
       firstMonth: first.month,
@@ -376,6 +489,8 @@ function buildView(ds: Dataset, filter: string): CustomerView {
       lastProduct: last.product,
       lastCs: last.cs,
       firstChannel: first.channel,
+      source: sourceOfChannel(first.channel),
+      returs: ds.returnsByPhone.get(phone)?.length ?? 0,
       avgInterval: days.length > 1 ? Math.round(lifetime / (days.length - 1)) : null,
       recency,
       lifetime,
@@ -393,16 +508,40 @@ function buildView(ds: Dataset, filter: string): CustomerView {
     c.segment = segmentOf(c.r, c.f);
   }
 
-  return { filter, orders, customers, byPhone: new Map(customers.map((c) => [c.phone, c])) };
+  return { filter, year, orders, customers, byPhone: new Map(customers.map((c) => [c.phone, c])), cache: new Map() };
 }
 
-/** Profil customer + RFM untuk filter produk tertentu (di-memo per dataset). */
-export async function getView(filter: string = DEFAULT_PRODUCT_FILTER): Promise<{ ds: Dataset; view: CustomerView }> {
+/**
+ * Simpan hasil hitungan berat (cohort, grafik dashboard) per view, agar tidak dihitung ulang setiap halaman dibuka.
+ * Cache ikut terbuang saat data dimuat ulang. Jangan dipakai untuk hasil yang bergantung pada CRM pemegang,
+ * karena pembagian CRM mengubah customer tanpa memuat ulang data.
+ */
+export function memo<T>(view: CustomerView, key: string, compute: () => T): T {
+  if (view.cache.has(key)) return view.cache.get(key) as T;
+  const value = compute();
+  view.cache.set(key, value);
+  return value;
+}
+
+/** Tahun-tahun yang ada di data, untuk pilihan filter. */
+export function dataYears(ds: Dataset): string[] {
+  const years: string[] = [];
+  for (let y = +START_DATE.slice(0, 4); y <= +ds.refDate.slice(0, 4); y++) years.push(String(y));
+  return years;
+}
+
+/**
+ * Profil customer + RFM untuk filter produk tertentu (di-memo per dataset).
+ * Dengan `year`, hanya order tahun tsb yang dihitung (RFM per tahun).
+ */
+export async function getView(filter: string = DEFAULT_PRODUCT_FILTER, year = ''): Promise<{ ds: Dataset; view: CustomerView }> {
   const ds = await getDataset();
-  const key = PRODUCT_FILTERS.some((p) => p.value === filter) ? filter : DEFAULT_PRODUCT_FILTER;
+  const productKey = PRODUCT_FILTERS.some((p) => p.value === filter) ? filter : DEFAULT_PRODUCT_FILTER;
+  const y = dataYears(ds).includes(year) ? +year : null;
+  const key = y ? `${productKey}@${y}` : productKey;
   let view = ds.views.get(key);
   if (!view) {
-    view = buildView(ds, key);
+    view = buildView(ds, productKey, y);
     ds.views.set(key, view);
   }
   return { ds, view };

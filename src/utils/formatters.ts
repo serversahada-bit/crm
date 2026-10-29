@@ -48,8 +48,9 @@ export function formatDays(days: number | null): string {
   return rest ? `${years} thn ${rest} bln` : `${years} thn`;
 }
 
-/** 6281234567890 -> 0812-3456-7890 */
+/** 6281234567890 -> 0812-3456-7890, 85291234567 -> +852 9123 4567 */
 export function formatPhone(phone: string): string {
+  if (phone.startsWith('852') && phone.length === 11) return `+852 ${phone.slice(3, 7)} ${phone.slice(7)}`;
   const local = phone.startsWith('62') ? '0' + phone.slice(2) : phone;
   return local.replace(/^(\d{4})(\d{4})(\d+)$/, '$1-$2-$3');
 }

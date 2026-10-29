@@ -151,12 +151,25 @@ export function StatusBadge({ status }: { status: CustomerStatus }) {
   return <span className={`pill tone-${STATUS_TONE[status]}`}>{status}</span>;
 }
 
-export function Pagination({ page, totalPages, href }: { page: number; totalPages: number; href: (page: number) => string }) {
-  if (totalPages <= 1) return null;
+/** Dengan `totalPages` menampilkan "Halaman X dari Y"; tanpa itu cukup `hasNext` (jumlah total tidak perlu dihitung). */
+export function Pagination({
+  page,
+  totalPages,
+  hasNext,
+  href,
+}: {
+  page: number;
+  totalPages?: number;
+  hasNext?: boolean;
+  href: (page: number) => string;
+}) {
+  const next = totalPages === undefined ? !!hasNext : page < totalPages;
+  if (page <= 1 && !next) return null;
   return (
     <div className="pagination">
       <span>
-        Halaman {formatNumber(page)} dari {formatNumber(totalPages)}
+        Halaman {formatNumber(page)}
+        {totalPages !== undefined && ` dari ${formatNumber(totalPages)}`}
       </span>
       <div>
         {page > 1 ? (
@@ -164,7 +177,7 @@ export function Pagination({ page, totalPages, href }: { page: number; totalPage
             <ChevronLeft size={15} /> Sebelumnya
           </Link>
         ) : null}
-        {page < totalPages ? (
+        {next ? (
           <Link className="btn-ghost" href={href(page + 1)}>
             Berikutnya <ChevronRight size={15} />
           </Link>

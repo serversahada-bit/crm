@@ -1,6 +1,7 @@
 import { cache } from 'react';
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
+import { connection } from 'next/server';
 import { passwordVersion } from './password';
 import { decodeSession, encodeSession, SESSION_COOKIE, SESSION_MAX_AGE } from './session';
 import { findUserById, Role, UserRecord } from './users';
@@ -16,7 +17,11 @@ export interface CurrentUser {
 
 /** User yang sedang login, dicek ulang ke database (akun nonaktif / password berubah = keluar). */
 export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
-  const session = decodeSession((await cookies()).get(SESSION_COOKIE)?.value);
+  const token = (await cookies()).get(SESSION_COOKIE)?.value;
+  // Cek kedaluwarsa sesi memakai jam saat ini, jadi harus dihitung per request, bukan saat Next.js
+  // menyiapkan shell halaman (partialPrefetching ikut merender bagian yang membaca cookie).
+  await connection();
+  const session = decodeSession(token);
   if (!session) return null;
   const user = await findUserById(session.uid);
   if (!user || !user.aktif || passwordVersion(user.passwordHash) !== session.pv) return null;

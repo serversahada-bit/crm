@@ -1,15 +1,13 @@
 import { Suspense } from 'react';
 import Form from 'next/form';
 import { CalendarRange, Hourglass, Repeat, ShoppingCart } from 'lucide-react';
-import { computeCohort, computeLifetime } from '@/lib/cohort';
-import { getView, monthLabel } from '@/lib/dataset';
-import { DEFAULT_PRODUCT_FILTER } from '@/lib/normalize';
+import { cohortSummary, sourceComparison } from '@/lib/cohort';
+import { dataYears, getView, monthLabel } from '@/lib/dataset';
+import { CUSTOMER_SOURCES, DEFAULT_PRODUCT_FILTER } from '@/lib/normalize';
 import { param, SearchParams } from '@/lib/params';
 import { AutoSubmitSelect } from '@/components/ShellControls';
 import { Card, HBars, Kpi, LoadingBlock, PageHeader, ProductSelect, StackedBars } from '@/components/ui';
 import { formatDays, formatNumber, formatPercent } from '@/utils/formatters';
-
-const YEARS = ['2023', '2024', '2025', '2026'];
 
 export default function CohortPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
   return (
@@ -25,6 +23,9 @@ export default function CohortPage({ searchParams }: { searchParams: Promise<Sea
   );
 }
 
+/** Bulan ke-N yang ditampilkan di perbandingan sumber customer. */
+const SOURCE_OFFSETS = [1, 2, 3, 6, 12];
+
 function heat(ratio: number): string {
   // Skala warna retensi: 0% transparan, >= 40% paling pekat.
   const pct = Math.min(90, Math.round(10 + (ratio / 0.4) * 80));
@@ -35,14 +36,16 @@ async function Cohort({ searchParams }: { searchParams: Promise<SearchParams> })
   const sp = await searchParams;
   const produk = param(sp, 'produk', DEFAULT_PRODUCT_FILTER);
   const tahun = param(sp, 'tahun');
+  const sumber = param(sp, 'sumber');
   const tampil = param(sp, 'tampil', 'persen');
   const { ds, view } = await getView(produk);
 
-  const from = tahun ? +tahun * 12 : undefined;
-  const to = tahun ? +tahun * 12 + 11 : undefined;
-  const cohort = computeCohort(ds, view, from, to);
-  const life = computeLifetime(view);
+  // Tahun & sumber berlaku untuk semua angka di halaman ini, bukan hanya tabel cohort. Hasilnya di-cache.
+  const { cohort, life } = cohortSummary(ds, view, tahun, sumber);
   const curve = cohort.average.slice(1, 25);
+  const sumberLabel = CUSTOMER_SOURCES.find((s) => s.value === sumber)?.label;
+  const periodLabel = tahun ? `customer baru ${tahun}` : '2023 - sekarang';
+  const bySource = sourceComparison(ds, view, tahun);
 
   return (
     <>
@@ -52,9 +55,20 @@ async function Cohort({ searchParams }: { searchParams: Promise<SearchParams> })
           <span>Tahun cohort</span>
           <AutoSubmitSelect name="tahun" defaultValue={tahun}>
             <option value="">Semua (2023 - sekarang)</option>
-            {YEARS.map((y) => (
+            {dataYears(ds).map((y) => (
               <option key={y} value={y}>
                 {y}
+              </option>
+            ))}
+          </AutoSubmitSelect>
+        </label>
+        <label className="field">
+          <span>Sumber customer</span>
+          <AutoSubmitSelect name="sumber" defaultValue={sumber}>
+            <option value="">Semua sumber</option>
+            {CUSTOMER_SOURCES.map((s) => (
+              <option key={s.value} value={s.value}>
+                {s.label}
               </option>
             ))}
           </AutoSubmitSelect>
@@ -76,7 +90,12 @@ async function Cohort({ searchParams }: { searchParams: Promise<SearchParams> })
           icon={Repeat}
           tone="emerald"
         />
-        <Kpi label="Rata-rata Order" value={`${formatNumber(life.avgOrders, 2)}x`} hint="Per customer selama 2023 - sekarang" icon={ShoppingCart} />
+        <Kpi
+          label="Rata-rata Order"
+          value={`${formatNumber(life.avgOrders, 2)}x`}
+          hint={`Per customer (${periodLabel}${sumberLabel ? `, ${sumberLabel}` : ''})`}
+          icon={ShoppingCart}
+        />
         <Kpi
           label="Lama Bertahan"
           value={formatDays(life.medianLifetimeRepeaters)}
@@ -92,6 +111,47 @@ async function Cohort({ searchParams }: { searchParams: Promise<SearchParams> })
           tone="amber"
         />
       </div>
+
+      <Card
+        title="Perbandingan Sumber Customer"
+        description={`Retensi customer baru berdasarkan channel order pertama (${periodLabel}). B1 = % yang beli lagi 1 bulan setelah bulan pertama, dst.`}
+      >
+        <div className="table-wrapper">
+          <table className="data-table compact">
+            <thead>
+              <tr>
+                <th>Sumber</th>
+                <th className="num">Customer baru</th>
+                <th className="num">Repeat rate</th>
+                {SOURCE_OFFSETS.map((k) => (
+                  <th key={k} className="num">
+                    B{k}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {bySource.map((s) => (
+                <tr key={s.value} className={s.value === sumber ? 'row-highlight' : undefined}>
+                  <td>
+                    <strong>{s.label}</strong>
+                  </td>
+                  <td className="num">{formatNumber(s.life.customers)}</td>
+                  <td className="num">{formatPercent(s.life.repeatRate)}</td>
+                  {SOURCE_OFFSETS.map((k) => {
+                    const v = s.cohort.average[k];
+                    return (
+                      <td key={k} className="num" style={{ background: v == null ? undefined : heat(v) }}>
+                        {v == null ? '-' : formatPercent(v)}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
 
       <div className="grid-3">
         <Card title="Kurva Retensi" description="Rata-rata % customer yang beli lagi di bulan ke-N setelah order pertama.">
@@ -116,8 +176,8 @@ async function Cohort({ searchParams }: { searchParams: Promise<SearchParams> })
       </div>
 
       <Card
-        title="Tabel Retensi Cohort"
-        description="Baris = bulan pertama beli. Kolom B1, B2, ... = bulan ke-N setelahnya. Angka = % (atau jumlah) customer cohort tsb yang order lagi di bulan itu."
+        title={sumberLabel ? `Tabel Retensi Cohort: Customer Baru ${sumberLabel}` : 'Tabel Retensi Cohort'}
+        description={`Baris = bulan pertama beli${sumberLabel ? ` (order pertama lewat ${sumberLabel})` : ''}. Kolom B1, B2, ... = bulan ke-N setelahnya. Angka = % (atau jumlah) customer cohort tsb yang order lagi di bulan itu. Order retur / gagal kirim tidak dihitung.`}
       >
         <div className="table-wrapper cohort-wrap">
           <table className="cohort-table">

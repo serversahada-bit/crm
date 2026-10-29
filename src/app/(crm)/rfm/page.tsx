@@ -3,12 +3,14 @@ import Form from 'next/form';
 import Link from 'next/link';
 import { Download } from 'lucide-react';
 import { FREQUENCY_SCORE, RECENCY_SCORE } from '@/lib/config';
-import { getView } from '@/lib/dataset';
+import { dataYears, getView } from '@/lib/dataset';
 import { DEFAULT_PRODUCT_FILTER } from '@/lib/normalize';
 import { param, SearchParams } from '@/lib/params';
-import { quintileBreaks, SEGMENT_BY_ID, SEGMENTS, segmentOf } from '@/lib/rfm';
+import { SEGMENT_BY_ID, SEGMENTS, segmentOf } from '@/lib/rfm';
+import { rfmSummary } from '@/lib/summary';
+import { AutoSubmitSelect } from '@/components/ShellControls';
 import { Card, LoadingBlock, PageHeader, ProductSelect } from '@/components/ui';
-import { formatCompactRupiah, formatDays, formatNumber, formatPercent, formatRupiah } from '@/utils/formatters';
+import { formatCompactRupiah, formatDate, formatDays, formatNumber, formatPercent, formatRupiah } from '@/utils/formatters';
 
 export default function RfmPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
   return (
@@ -27,22 +29,13 @@ export default function RfmPage({ searchParams }: { searchParams: Promise<Search
 async function Rfm({ searchParams }: { searchParams: Promise<SearchParams> }) {
   const sp = await searchParams;
   const produk = param(sp, 'produk', DEFAULT_PRODUCT_FILTER);
-  const { view } = await getView(produk);
+  const { ds, view } = await getView(produk, param(sp, 'periode'));
+  const periode = view.year ? String(view.year) : '';
   const cs = view.customers;
-  const totalSpend = cs.reduce((s, c) => s + c.spend, 0);
-
-  const stats = new Map(SEGMENTS.map((s) => [s.id, { count: 0, spend: 0, recency: 0, orders: 0 }]));
-  const grid = Array.from({ length: 5 }, () => new Array(5).fill(0)); // grid[r-1][f-1]
-  for (const c of cs) {
-    const s = stats.get(c.segment)!;
-    s.count++;
-    s.spend += c.spend;
-    s.recency += c.recency;
-    s.orders += c.orders;
-    grid[c.r - 1][c.f - 1]++;
-  }
-  const gridMax = Math.max(1, ...grid.flat());
-  const mBreaks = quintileBreaks(cs.map((c) => c.spend));
+  const query = `produk=${produk}${periode ? `&periode=${periode}` : ''}`;
+  const yearEnd = periode && `${periode}-12-31` < ds.refDate ? `${periode}-12-31` : ds.refDate;
+  // Di-cache sampai data dimuat ulang.
+  const { totalSpend, stats, grid, gridMax, mBreaks } = rfmSummary(view);
 
   const recencyText = (score: number) => {
     const idx = RECENCY_SCORE.findIndex((r) => r.score === score);
@@ -66,7 +59,27 @@ async function Rfm({ searchParams }: { searchParams: Promise<SearchParams> }) {
     <>
       <Form action="" className="filter-bar">
         <ProductSelect value={produk} />
+        <label className="field">
+          <span>Periode transaksi</span>
+          <AutoSubmitSelect name="periode" defaultValue={periode}>
+            <option value="">Semua (2023 - sekarang)</option>
+            {dataYears(ds).map((y) => (
+              <option key={y} value={y}>
+                Tahun {y}
+              </option>
+            ))}
+          </AutoSubmitSelect>
+        </label>
       </Form>
+
+      {periode && (
+        <div className="note">
+          <span>
+            RFM tahun {periode}: hanya {formatNumber(cs.length)} customer yang order di tahun {periode}, dengan Frequency & Monetary dari
+            order tahun itu saja dan Recency dihitung per {formatDate(yearEnd)}.
+          </span>
+        </div>
+      )}
 
       <div className="segment-grid">
         {SEGMENTS.map((seg) => {
@@ -99,11 +112,11 @@ async function Rfm({ searchParams }: { searchParams: Promise<SearchParams> }) {
               </dl>
               <p className="segment-action">💡 {seg.action}</p>
               <div className="segment-links">
-                <Link className="link" href={`/customers?produk=${produk}&segmen=${seg.id}`}>
+                <Link className="link" href={`/customers?${query}&segmen=${seg.id}`}>
                   Lihat customer →
                 </Link>
-                <a className="link" href={`/api/export/customers?produk=${produk}&segmen=${seg.id}`}>
-                  <Download size={13} /> CSV
+                <a className="link" href={`/api/export/customers?${query}&segmen=${seg.id}`}>
+                  <Download size={13} /> Excel
                 </a>
               </div>
             </div>
@@ -133,7 +146,7 @@ async function Rfm({ searchParams }: { searchParams: Promise<SearchParams> }) {
                           title={`${seg.label}: ${formatNumber(n)} customer`}
                           style={{ background: `color-mix(in srgb, ${seg.color} ${alpha}%, transparent)` }}
                         >
-                          <Link href={`/customers?produk=${produk}&segmen=${seg.id}`}>
+                          <Link href={`/customers?${query}&segmen=${seg.id}`}>
                             <strong>{formatNumber(n)}</strong>
                             <span>{seg.label}</span>
                           </Link>
@@ -183,7 +196,7 @@ async function Rfm({ searchParams }: { searchParams: Promise<SearchParams> }) {
             </tbody>
           </table>
           <p className="muted-small" style={{ marginTop: '0.75rem' }}>
-            Recency dihitung dari order terakhir di data. Beberapa order di hari yang sama dihitung 1 kali beli. Monetary dibagi per
+            Recency dihitung dari order terakhir di data (atau 31 Desember bila memilih periode tahun). Beberapa order di hari yang sama dihitung 1 kali beli. Monetary dibagi per
             kuintil (20%) total belanja customer, dan segmen ditentukan dari kombinasi R dan F.
           </p>
         </Card>

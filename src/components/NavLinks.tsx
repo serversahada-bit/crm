@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { BarChart3, BellRing, Grid3x3, LayoutDashboard, Receipt, UserCog, Users } from 'lucide-react';
+import { BarChart3, BellRing, Grid3x3, LayoutDashboard, PackageX, Receipt, Shuffle, Target, UserCog, Users } from 'lucide-react';
 
 const NAV_GROUPS = {
   main: [
@@ -12,8 +12,13 @@ const NAV_GROUPS = {
     { href: '/rfm', label: 'Analisa RFM', icon: Grid3x3 },
     { href: '/cohort', label: 'Analisa Cohort', icon: BarChart3 },
     { href: '/reminder', label: 'Reminder RO', icon: BellRing },
+    { href: '/kampanye', label: 'Kampanye Treatment', icon: Target },
+    { href: '/retur', label: 'Customer Retur', icon: PackageX },
   ],
-  admin: [{ href: '/pengguna', label: 'Pengguna', icon: UserCog }],
+  admin: [
+    { href: '/pembagian', label: 'Pembagian CRM', icon: Shuffle },
+    { href: '/pengguna', label: 'Pengguna', icon: UserCog },
+  ],
 };
 
 export type NavGroup = keyof typeof NAV_GROUPS;

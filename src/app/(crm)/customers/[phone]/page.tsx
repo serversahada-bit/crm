@@ -2,12 +2,16 @@ import { Suspense } from 'react';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { ArrowLeft, CalendarClock, MessageCircle, Repeat, ShoppingBag, Wallet } from 'lucide-react';
-import { getView } from '@/lib/dataset';
-import { DEFAULT_PRODUCT_FILTER, PRODUCT_LABEL, waLink } from '@/lib/normalize';
+import { getCurrentUser } from '@/lib/auth';
+import { crmOptions } from '@/lib/customerQuery';
+import { Dataset, getView, Order, ReturOrder } from '@/lib/dataset';
+import { CUSTOMER_SOURCES, DEFAULT_PRODUCT_FILTER, PRODUCT_LABEL, waLink } from '@/lib/normalize';
+import { listTeam } from '@/lib/pembagian';
 import { param, SearchParams } from '@/lib/params';
 import { SEGMENT_BY_ID } from '@/lib/rfm';
 import { Card, Kpi, LoadingBlock, SegmentBadge, StatusBadge } from '@/components/ui';
 import { formatDate, formatDays, formatNumber, formatPhone, formatRupiah } from '@/utils/formatters';
+import { assignCrm } from '../../pembagian/actions';
 
 export default function CustomerDetailPage({
   params,
@@ -23,17 +27,33 @@ export default function CustomerDetailPage({
   );
 }
 
+type HistoryRow = (Order & { retur?: undefined }) | (ReturOrder & { qty?: undefined; retur: true });
+
+/** Order sukses + order retur / gagal kirim, terbaru di atas. */
+function history(ds: Dataset, phone: string): HistoryRow[] {
+  const rows: HistoryRow[] = [
+    ...(ds.ordersByPhone.get(phone) ?? []),
+    ...(ds.returnsByPhone.get(phone) ?? []).map((r) => ({ ...r, retur: true as const })),
+  ];
+  return rows.sort((a, b) => b.day - a.day);
+}
+
 async function CustomerDetail({ params, searchParams }: { params: Promise<{ phone: string }>; searchParams: Promise<SearchParams> }) {
   const { phone } = await params;
   const produk = param(await searchParams, 'produk', DEFAULT_PRODUCT_FILTER);
   const { ds, view } = await getView(produk);
   // Profil memakai filter produk aktif; jika customer tidak membeli produk tsb, pakai semua produk.
-  const c = view.byPhone.get(phone) ?? (await getView('all')).view.byPhone.get(phone);
+  const all = (await getView('all')).view;
+  const c = view.byPhone.get(phone) ?? all.byPhone.get(phone);
   if (!c) notFound();
 
-  const orders = [...(ds.ordersByPhone.get(phone) ?? [])].reverse();
+  const rows = history(ds, phone);
   const segment = SEGMENT_BY_ID[c.segment];
   const nextRo = c.avgInterval ?? 30;
+  const assignment = ds.assignments.get(phone);
+  const isAdmin = (await getCurrentUser())?.role === 'admin';
+  const crmNames = isAdmin ? crmOptions(all, (await listTeam()).map((m) => m.nama)) : [];
+  const sourceLabel = CUSTOMER_SOURCES.find((s) => s.value === c.source)?.label;
 
   return (
     <>
@@ -46,6 +66,7 @@ async function CustomerDetail({ params, searchParams }: { params: Promise<{ phon
           <p>
             {formatPhone(c.phone)} · {[c.kota, c.provinsi].filter(Boolean).join(', ') || 'Alamat tidak tercatat'}
             {c.crm && ` · CRM: ${c.crm}`}
+            {sourceLabel && ` · Sumber: ${sourceLabel}`}
           </p>
           <div className="badges">
             <SegmentBadge segment={c.segment} />
@@ -53,6 +74,7 @@ async function CustomerDetail({ params, searchParams }: { params: Promise<{ phon
             <span className="pill">
               RFM {c.r}-{c.f}-{c.m}
             </span>
+            {c.returs > 0 && <span className="pill tone-danger">{c.returs}x retur / gagal kirim</span>}
           </div>
         </div>
         <a className="btn-primary-gradient" href={waLink(c.phone, `Halo kak ${c.name}, `)} target="_blank" rel="noreferrer">
@@ -76,7 +98,41 @@ async function CustomerDetail({ params, searchParams }: { params: Promise<{ phon
         <strong style={{ color: segment.color }}>{segment.label}:</strong> {segment.description} <em>Saran: {segment.action}</em>
       </div>
 
-      <Card title="Riwayat Order" description={`${orders.length} order (semua produk), terbaru di atas.`}>
+      {isAdmin && (
+        <Card
+          title="CRM Pemegang"
+          description={
+            assignment
+              ? `Dibagikan ${assignment.method === 'manual' ? `manual${assignment.by ? ` oleh ${assignment.by}` : ''}` : 'otomatis'} pada ${formatDate(assignment.at)}${assignment.cso ? `, CSO: ${assignment.cso}` : ''}.`
+              : c.crm
+                ? 'Belum dibagikan lewat CRM; nama di atas dari kolom crm data_customer.'
+                : 'Customer ini belum punya CRM.'
+          }
+        >
+          <form action={assignCrm} className="inline-form">
+            <input type="hidden" name="phone" value={c.phone} />
+            <label className="field">
+              <span>Ganti CRM</span>
+              <select className="dropdown-select" name="crm" defaultValue={assignment?.crm ?? ''}>
+                <option value="">(belum dibagikan)</option>
+                {crmNames.map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button type="submit" className="btn-ghost">
+              Simpan
+            </button>
+          </form>
+        </Card>
+      )}
+
+      <Card
+        title="Riwayat Order"
+        description={`${formatNumber(rows.length)} order (semua produk), terbaru di atas. Order retur / gagal kirim tidak dihitung sebagai pembelian.`}
+      >
         <div className="table-wrapper">
           <table className="data-table compact">
             <thead>
@@ -89,19 +145,30 @@ async function CustomerDetail({ params, searchParams }: { params: Promise<{ phon
                 <th>CS</th>
                 <th>Channel</th>
                 <th>Kota</th>
+                <th>Status</th>
               </tr>
             </thead>
             <tbody>
-              {orders.map((o) => (
-                <tr key={o.id}>
+              {rows.map((o, i) => (
+                <tr key={`${o.id}-${i}`} className={o.retur ? 'row-muted' : undefined}>
                   <td className="nowrap">{formatDate(o.date)}</td>
                   <td className="mono">{o.id}</td>
                   <td>{PRODUCT_LABEL[o.product]}</td>
-                  <td className="num">{o.qty}</td>
+                  <td className="num">{o.qty ?? '-'}</td>
                   <td className="num nowrap">{formatRupiah(o.total)}</td>
                   <td>{o.cs}</td>
                   <td>{o.channel}</td>
                   <td>{o.kota || '-'}</td>
+                  <td>
+                    {o.retur ? (
+                      <>
+                        <span className={`pill tone-${o.kind === 'Retur' ? 'danger' : 'warning'}`}>{o.kind}</span>
+                        {o.reason && <div className="muted-small">{o.reason}</div>}
+                      </>
+                    ) : (
+                      <span className="pill tone-success">OK</span>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>

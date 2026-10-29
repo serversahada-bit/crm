@@ -26,13 +26,18 @@ export const PRODUCT_FILTERS: { value: string; label: string; codes: ProductCode
 
 export const DEFAULT_PRODUCT_FILTER = 'gamamilk';
 
+/** Nomor luar negeri yang diterima apa adanya: [kode negara, jumlah digit total]. Hong Kong = 852 + 8 digit. */
+const FOREIGN_PHONES: [string, number][] = [['852', 11]];
+
 /**
- * Menyeragamkan nomor HP ke format 628xxxxxxxxx.
+ * Menyeragamkan nomor HP ke format 628xxxxxxxxx (tanpa +, spasi, atau -). Nomor Hong Kong tetap 852xxxxxxxx.
  * Nomor yang disamarkan marketplace (mengandung *) atau tidak valid menghasilkan null.
  */
 export function normalizePhone(raw: string | null | undefined): string | null {
   if (!raw || raw.includes('*')) return null;
   let digits = raw.replace(/\D/g, '');
+  // Dicek sebelum aturan "8xx" karena 852xxxxxxxx bisa terbaca sebagai 0852 (Telkomsel).
+  if (FOREIGN_PHONES.some(([code, length]) => digits.startsWith(code) && digits.length === length)) return digits;
   if (digits.startsWith('0')) digits = '62' + digits.slice(1);
   else if (digits.startsWith('8')) digits = '62' + digits;
   if (!digits.startsWith('628') || digits.length < 10 || digits.length > 15) return null;
@@ -68,6 +73,10 @@ export function classifyProduct(row: {
   );
 }
 
+export const CHANNEL_CRM = 'CRM (Repeat Order)';
+/** Order dari iklan / WA yang ditangani CS akuisisi (CSO). */
+export const CHANNEL_CSO = 'Iklan / WA (Akuisisi)';
+
 /** Channel penjualan, diturunkan dari keterangan, tipe pembayaran, dan kolom adv. */
 export function classifyChannel(ket: string | null, payment: string | null, adv: string | null): string {
   const s = `${ket ?? ''} ${payment ?? ''}`.toLowerCase();
@@ -75,8 +84,23 @@ export function classifyChannel(ket: string | null, payment: string | null, adv:
   if (s.includes('tiktok')) return 'TikTok';
   if (s.includes('lazada')) return 'Lazada';
   if (s.includes('tokopedia')) return 'Tokopedia';
-  if ((adv ?? '').toUpperCase().startsWith('CRM')) return 'CRM (Repeat Order)';
-  return 'Iklan / WA (Akuisisi)';
+  if ((adv ?? '').toUpperCase().startsWith('CRM')) return CHANNEL_CRM;
+  return CHANNEL_CSO;
+}
+
+export type CustomerSource = 'cso' | 'marketplace' | 'crm';
+
+/** Sumber customer = channel order pertamanya. */
+export const CUSTOMER_SOURCES: { value: CustomerSource; label: string }[] = [
+  { value: 'cso', label: 'CSO (iklan / WA)' },
+  { value: 'marketplace', label: 'Marketplace' },
+  { value: 'crm', label: 'CRM' },
+];
+
+export function sourceOfChannel(channel: string): CustomerSource {
+  if (channel === CHANNEL_CSO) return 'cso';
+  if (channel === CHANNEL_CRM) return 'crm';
+  return 'marketplace';
 }
 
 const CANCELLED = /batal|cancel|return|retur|gagal|lost by/i;

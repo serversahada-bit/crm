@@ -2,9 +2,10 @@ import { Suspense } from 'react';
 import Form from 'next/form';
 import Link from 'next/link';
 import { Download, MessageCircle, Search } from 'lucide-react';
-import { getView } from '@/lib/dataset';
-import { csOptions, filterCustomers, readCustomerFilters, SORTS } from '@/lib/customerQuery';
-import { DEFAULT_PRODUCT_FILTER, PRODUCT_LABEL, waLink } from '@/lib/normalize';
+import { dataYears, getView } from '@/lib/dataset';
+import { crmOptions, csOptions, filterCustomers, readCustomerFilters, SORTS } from '@/lib/customerQuery';
+import { CUSTOMER_SOURCES, DEFAULT_PRODUCT_FILTER, PRODUCT_LABEL, waLink } from '@/lib/normalize';
+import { listTeam } from '@/lib/pembagian';
 import { intParam, param, SearchParams, withParams } from '@/lib/params';
 import { SEGMENTS } from '@/lib/rfm';
 import { Empty, LoadingBlock, PageHeader, Pagination, ProductSelect, SegmentBadge, StatusBadge } from '@/components/ui';
@@ -12,7 +13,6 @@ import { AutoSubmitSelect } from '@/components/ShellControls';
 import { formatDate, formatDays, formatNumber, formatPhone, formatRupiah } from '@/utils/formatters';
 
 const PAGE_SIZE = 50;
-const YEARS = ['2023', '2024', '2025', '2026'];
 
 export default function CustomersPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
   return (
@@ -32,7 +32,10 @@ async function CustomerTable({ searchParams }: { searchParams: Promise<SearchPar
   const sp = await searchParams;
   const produk = param(sp, 'produk', DEFAULT_PRODUCT_FILTER);
   const f = readCustomerFilters(sp);
-  const { view } = await getView(produk);
+  const { ds, view } = await getView(produk, param(sp, 'periode'));
+  const periode = view.year ? String(view.year) : '';
+  const years = dataYears(ds);
+  const team = (await listTeam()).map((m) => m.nama);
   const rows = filterCustomers(view, f);
   const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
   const page = Math.min(intParam(sp, 'page', 1), totalPages);
@@ -76,13 +79,25 @@ async function CustomerTable({ searchParams }: { searchParams: Promise<SearchPar
             <option value="">Semua</option>
             <option value="ro">Sudah RO (≥ 2x)</option>
             <option value="sekali">Baru 1x beli</option>
+            <option value="retur">Pernah retur / gagal kirim</option>
+          </AutoSubmitSelect>
+        </label>
+        <label className="field">
+          <span>Sumber</span>
+          <AutoSubmitSelect name="sumber" defaultValue={f.sumber}>
+            <option value="">Semua sumber</option>
+            {CUSTOMER_SOURCES.map((s) => (
+              <option key={s.value} value={s.value}>
+                {s.label}
+              </option>
+            ))}
           </AutoSubmitSelect>
         </label>
         <label className="field">
           <span>Pertama beli</span>
           <AutoSubmitSelect name="tahun" defaultValue={f.tahun}>
             <option value="">Semua tahun</option>
-            {YEARS.map((y) => (
+            {years.map((y) => (
               <option key={y} value={y}>
                 {y}
               </option>
@@ -96,6 +111,28 @@ async function CustomerTable({ searchParams }: { searchParams: Promise<SearchPar
             {csOptions(view).map((c) => (
               <option key={c} value={c}>
                 {c}
+              </option>
+            ))}
+          </AutoSubmitSelect>
+        </label>
+        <label className="field">
+          <span>CRM</span>
+          <AutoSubmitSelect name="crm" defaultValue={f.crm}>
+            <option value="">Semua CRM</option>
+            {crmOptions(view, team).map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </AutoSubmitSelect>
+        </label>
+        <label className="field">
+          <span>Periode RFM</span>
+          <AutoSubmitSelect name="periode" defaultValue={periode}>
+            <option value="">Semua (2023 - sekarang)</option>
+            {years.map((y) => (
+              <option key={y} value={y}>
+                Order tahun {y}
               </option>
             ))}
           </AutoSubmitSelect>
@@ -124,7 +161,7 @@ async function CustomerTable({ searchParams }: { searchParams: Promise<SearchPar
           <strong>{formatNumber(rows.length)}</strong> customer ditemukan
         </span>
         <a className="btn-ghost" href={exportHref}>
-          <Download size={15} /> Export CSV (Excel)
+          <Download size={15} /> Export Excel
         </a>
       </div>
 
@@ -145,6 +182,7 @@ async function CustomerTable({ searchParams }: { searchParams: Promise<SearchPar
                 <th className="num">Total belanja</th>
                 <th>Produk terakhir</th>
                 <th>CS terakhir</th>
+                <th>CRM</th>
                 <th>Segmen</th>
                 <th>Status</th>
               </tr>
@@ -156,6 +194,13 @@ async function CustomerTable({ searchParams }: { searchParams: Promise<SearchPar
                     <Link className="link strong" href={`/customers/${c.phone}?produk=${produk}`}>
                       {c.name}
                     </Link>
+                    {c.returs > 0 && (
+                      <div>
+                        <span className="pill tone-danger" title="Order retur / gagal kirim tidak dihitung sebagai pembelian">
+                          {c.returs}x retur
+                        </span>
+                      </div>
+                    )}
                   </td>
                   <td className="nowrap">
                     <a className="wa" href={waLink(c.phone)} target="_blank" rel="noreferrer" title="Chat WhatsApp">
@@ -173,6 +218,7 @@ async function CustomerTable({ searchParams }: { searchParams: Promise<SearchPar
                   <td className="num nowrap">{formatRupiah(c.spend)}</td>
                   <td>{PRODUCT_LABEL[c.lastProduct]}</td>
                   <td>{c.lastCs}</td>
+                  <td>{c.crm || '-'}</td>
                   <td>
                     <SegmentBadge segment={c.segment} />
                   </td>

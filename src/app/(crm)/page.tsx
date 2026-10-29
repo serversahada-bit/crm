@@ -6,6 +6,7 @@ import { getView, monthLabel } from '@/lib/dataset';
 import { DEFAULT_PRODUCT_FILTER, PRODUCT_FILTERS } from '@/lib/normalize';
 import { param, SearchParams } from '@/lib/params';
 import { SEGMENTS } from '@/lib/rfm';
+import { monthlyCustomers } from '@/lib/summary';
 import { Card, HBars, Kpi, LoadingBlock, PageHeader, ProductSelect, StackedBars } from '@/components/ui';
 import { formatCompactRupiah, formatNumber, formatPercent } from '@/utils/formatters';
 
@@ -34,16 +35,8 @@ async function Dashboard({ searchParams }: { searchParams: Promise<SearchParams>
   const omzet = cs.reduce((s, c) => s + c.spend, 0);
   const productLabel = PRODUCT_FILTERS.find((p) => p.value === produk)?.label ?? '';
 
-  // Customer unik per bulan: baru (order pertama di bulan itu) vs RO.
-  const perMonth = new Map<number, { fresh: Set<string>; ro: Set<string>; omzet: number }>();
-  for (const o of view.orders) {
-    let m = perMonth.get(o.month);
-    if (!m) perMonth.set(o.month, (m = { fresh: new Set(), ro: new Set(), omzet: 0 }));
-    const c = view.byPhone.get(o.phone)!;
-    (c.firstMonth === o.month ? m.fresh : m.ro).add(o.phone);
-    m.omzet += o.total;
-  }
-  const months = [...perMonth.entries()].sort((a, b) => a[0] - b[0]);
+  // Customer unik per bulan: baru vs RO (di-cache sampai data dimuat ulang).
+  const months = monthlyCustomers(view);
   const shortLabel = (m: number) => monthLabel(m).replace(/ 20(\d\d)$/, " '$1");
 
   const countBy = (values: string[]) => {
@@ -85,7 +78,7 @@ async function Dashboard({ searchParams }: { searchParams: Promise<SearchParams>
 
       <Card title="Customer per Bulan" description="Jumlah customer unik yang order tiap bulan: customer baru vs customer repeat order.">
         <StackedBars
-          data={months.map(([m, v]) => ({ label: shortLabel(m), values: { fresh: v.fresh.size, ro: v.ro.size } }))}
+          data={months.map(([m, v]) => ({ label: shortLabel(m), values: { fresh: v.fresh, ro: v.ro } }))}
           series={[
             { key: 'fresh', label: 'Customer baru', color: 'var(--info)' },
             { key: 'ro', label: 'Customer RO', color: 'var(--success)' },
@@ -134,7 +127,11 @@ async function Dashboard({ searchParams }: { searchParams: Promise<SearchParams>
         <span>
           {formatNumber(ds.totals.masked)} order ({formatPercent(maskedShare)}) dari marketplace memakai no. HP yang disamarkan
           (mis. <code>******99</code>) sehingga tidak bisa dihitung sebagai customer. {formatNumber(ds.totals.cancelled)} order
-          batal/retur tidak dihitung.
+          batal, {formatNumber(ds.totals.retur)} order retur / gagal kirim (data tracking), dan {formatNumber(ds.totals.nonCustomer)}{' '}
+          order non-customer (endorse / giveaway: CS Afia, Bagas, Dhani, FF) tidak dihitung, termasuk sebagai customer baru.{' '}
+          <Link className="link" href="/retur">
+            Lihat customer retur →
+          </Link>
         </span>
       </div>
     </>

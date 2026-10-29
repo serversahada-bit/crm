@@ -4,6 +4,15 @@
 export const START_DATE = '2023-01-01';
 
 /**
+ * Order dari CS ini bukan customer (endorse, pemenang giveaway, aset live, dll.) dan tidak dihitung sama sekali.
+ * Dicocokkan per kata pada nama CS, mis. "ADV Google Bagas", "Afia Rizqi Tazkya". Huruf kecil semua.
+ */
+export const NON_CUSTOMER_CS = ['afia', 'bagas', 'dani', 'dhani'];
+
+/** Sama seperti NON_CUSTOMER_CS, tapi dicocokkan dengan awalan nama CS, mis. "FFHana", "FFsherly". */
+export const NON_CUSTOMER_CS_PREFIX = ['ff'];
+
+/**
  * Order Jan-Nov 2023 tidak punya kolom produk sama sekali. Di awal 2024 ±99% order adalah Gamamilk,
  * jadi order tanpa info produk sebelum tanggal ini dianggap Gamamilk. Isi '' untuk mematikan.
  */
@@ -42,3 +51,12 @@ export const DEFAULT_RO_INTERVAL_DAYS = 30;
 
 /** Reminder RO: toleransi hari sebelum jatuh tempo agar sudah muncul di daftar. */
 export const RO_REMINDER_LEAD_DAYS = 5;
+
+/** Pembagian otomatis: customer baru CSO dengan order pertama sejak tanggal ini dibagikan ke tim CRM. */
+export const DISTRIBUTION_START = '2026-10-01';
+
+/**
+ * Customer baru dibagikan setelah paketnya tercatat diterima di tabel tracking. Jika data tracking belum masuk,
+ * dibagikan setelah N hari sejak order selama tidak tercatat retur.
+ */
+export const DISTRIBUTION_WAIT_DAYS = 14;

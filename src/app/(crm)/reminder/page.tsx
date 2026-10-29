@@ -3,9 +3,10 @@ import Form from 'next/form';
 import Link from 'next/link';
 import { MessageCircle } from 'lucide-react';
 import { DEFAULT_RO_INTERVAL_DAYS, RO_REMINDER_LEAD_DAYS, STATUS_RULES } from '@/lib/config';
-import { csOptions } from '@/lib/customerQuery';
-import { getView } from '@/lib/dataset';
+import { crmOptions, csOptions } from '@/lib/customerQuery';
+import { getView, memo } from '@/lib/dataset';
 import { DEFAULT_PRODUCT_FILTER, PRODUCT_LABEL, waLink } from '@/lib/normalize';
+import { listTeam } from '@/lib/pembagian';
 import { intParam, param, SearchParams, withParams } from '@/lib/params';
 import { AutoSubmitSelect } from '@/components/ShellControls';
 import { Empty, LoadingBlock, PageHeader, Pagination, ProductSelect, SegmentBadge } from '@/components/ui';
@@ -38,23 +39,28 @@ async function Reminder({ searchParams }: { searchParams: Promise<SearchParams> 
   const sp = await searchParams;
   const produk = param(sp, 'produk', DEFAULT_PRODUCT_FILTER);
   const cs = param(sp, 'cs');
+  const crm = param(sp, 'crm');
   const win = param(sp, 'jendela');
   const { ds, view } = await getView(produk);
+  const team = (await listTeam()).map((m) => m.nama);
 
-  const due = view.customers
-    .filter((c) => c.recency <= STATUS_RULES.pasifMaxDays && (!cs || c.lastCs === cs))
-    .map((c) => {
-      const interval = c.avgInterval && c.avgInterval > 0 ? c.avgInterval : DEFAULT_RO_INTERVAL_DAYS;
-      return { c, interval, overdue: c.recency - interval };
-    })
-    .filter(({ overdue }) => {
-      if (overdue < -RO_REMINDER_LEAD_DAYS) return false;
-      if (win === 'segera') return overdue <= 0;
-      if (win === 'lewat') return overdue > 0 && overdue <= 30;
-      if (win === 'lama') return overdue > 30;
-      return true;
-    })
-    .sort((a, b) => a.overdue - b.overdue);
+  const allDue = memo(view, 'reminder', () =>
+    view.customers
+      .filter((c) => c.recency <= STATUS_RULES.pasifMaxDays)
+      .map((c) => {
+        const interval = c.avgInterval && c.avgInterval > 0 ? c.avgInterval : DEFAULT_RO_INTERVAL_DAYS;
+        return { c, interval, overdue: c.recency - interval };
+      })
+      .filter(({ overdue }) => overdue >= -RO_REMINDER_LEAD_DAYS)
+      .sort((a, b) => a.overdue - b.overdue),
+  );
+  const due = allDue.filter(({ c, overdue }) => {
+    if ((cs && c.lastCs !== cs) || (crm && c.crm !== crm)) return false;
+    if (win === 'segera') return overdue <= 0;
+    if (win === 'lewat') return overdue > 0 && overdue <= 30;
+    if (win === 'lama') return overdue > 30;
+    return true;
+  });
 
   const totalPages = Math.max(1, Math.ceil(due.length / PAGE_SIZE));
   const page = Math.min(intParam(sp, 'page', 1), totalPages);
@@ -85,6 +91,17 @@ async function Reminder({ searchParams }: { searchParams: Promise<SearchParams> 
             ))}
           </AutoSubmitSelect>
         </label>
+        <label className="field">
+          <span>CRM</span>
+          <AutoSubmitSelect name="crm" defaultValue={crm}>
+            <option value="">Semua CRM</option>
+            {crmOptions(view, team).map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </AutoSubmitSelect>
+        </label>
       </Form>
 
       <div className="table-toolbar">
@@ -108,6 +125,7 @@ async function Reminder({ searchParams }: { searchParams: Promise<SearchParams> 
                 <th className="num">Total belanja</th>
                 <th>Produk terakhir</th>
                 <th>CS</th>
+                <th>CRM</th>
                 <th>Segmen</th>
                 <th>Hubungi</th>
               </tr>
@@ -142,6 +160,7 @@ async function Reminder({ searchParams }: { searchParams: Promise<SearchParams> 
                   <td className="num nowrap">{formatRupiah(c.spend)}</td>
                   <td>{PRODUCT_LABEL[c.lastProduct]}</td>
                   <td>{c.lastCs}</td>
+                  <td>{c.crm || '-'}</td>
                   <td>
                     <SegmentBadge segment={c.segment} />
                   </td>

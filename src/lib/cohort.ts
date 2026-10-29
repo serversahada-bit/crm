@@ -1,5 +1,6 @@
-import type { CustomerView, Dataset } from './dataset';
-import { monthIndex } from './dataset';
+import type { Customer, CustomerView, Dataset } from './dataset';
+import { memo, monthIndex } from './dataset';
+import { CUSTOMER_SOURCES } from './normalize';
 
 export interface CohortRow {
   month: number; // bulan order pertama
@@ -14,12 +15,13 @@ export interface CohortResult {
   average: (number | null)[];
 }
 
-export function computeCohort(ds: Dataset, view: CustomerView, fromMonth?: number, toMonth?: number): CohortResult {
+/** `include` memilih customer yang ikut dihitung (mis. tahun cohort, sumber customer). */
+export function computeCohort(ds: Dataset, view: CustomerView, include: (c: Customer) => boolean = () => true): CohortResult {
   const refMonth = monthIndex(ds.refDate);
   const rows = new Map<number, CohortRow>();
 
   for (const c of view.customers) {
-    if ((fromMonth !== undefined && c.firstMonth < fromMonth) || (toMonth !== undefined && c.firstMonth > toMonth)) continue;
+    if (!include(c)) continue;
     let row = rows.get(c.firstMonth);
     if (!row) {
       row = { month: c.firstMonth, size: 0, active: new Array(refMonth - c.firstMonth + 1).fill(0) };
@@ -28,15 +30,15 @@ export function computeCohort(ds: Dataset, view: CustomerView, fromMonth?: numbe
     row.size++;
   }
 
-  const seen = new Set<string>();
+  // Order urut tanggal, jadi bulan order tiap customer tidak pernah mundur: cukup ingat bulan terakhir yang sudah dihitung.
+  const lastOffset = new Map<string, number>();
   for (const o of view.orders) {
     const c = view.byPhone.get(o.phone)!;
     const row = rows.get(c.firstMonth);
-    if (!row) continue;
+    if (!row || !include(c)) continue;
     const offset = o.month - c.firstMonth;
-    const key = `${o.phone}|${offset}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    if (lastOffset.get(o.phone) === offset) continue;
+    lastOffset.set(o.phone, offset);
     row.active[offset]++;
   }
 
@@ -81,40 +83,64 @@ function median(values: number[]): number {
   return s.length % 2 ? s[mid] : Math.round((s[mid - 1] + s[mid]) / 2);
 }
 
-/** Berapa lama customer bertahan: jarak order pertama ke order terakhir. */
-export function computeLifetime(view: CustomerView): LifetimeStats {
-  const cs = view.customers;
-  const repeaters = cs.filter((c) => c.orders > 1);
-  const lifetimes = repeaters.map((c) => c.lifetime);
-  const intervals = repeaters.map((c) => c.avgInterval!).filter((v) => v > 0);
+const LIFETIME_BUCKETS = ['Hanya 1x beli', '< 1 bulan', '1 - 3 bulan', '3 - 6 bulan', '6 - 12 bulan', '1 - 2 tahun', '> 2 tahun'];
+/** Batas atas (hari, tidak termasuk) bucket '< 1 bulan' sampai '1 - 2 tahun'; sisanya '> 2 tahun'. */
+const LIFETIME_LIMITS = [30, 90, 180, 365, 730];
+const RO_BUCKETS = ['1x (belum RO)', '2x (RO 1)', '3x', '4-5x', '6-9x', '10x+'];
 
-  const bucketDefs: [string, (c: (typeof cs)[number]) => boolean][] = [
-    ['Hanya 1x beli', (c) => c.orders === 1],
-    ['< 1 bulan', (c) => c.orders > 1 && c.lifetime < 30],
-    ['1 - 3 bulan', (c) => c.orders > 1 && c.lifetime >= 30 && c.lifetime < 90],
-    ['3 - 6 bulan', (c) => c.orders > 1 && c.lifetime >= 90 && c.lifetime < 180],
-    ['6 - 12 bulan', (c) => c.orders > 1 && c.lifetime >= 180 && c.lifetime < 365],
-    ['1 - 2 tahun', (c) => c.orders > 1 && c.lifetime >= 365 && c.lifetime < 730],
-    ['> 2 tahun', (c) => c.orders > 1 && c.lifetime >= 730],
-  ];
-  const roDefs: [string, (n: number) => boolean][] = [
-    ['1x (belum RO)', (n) => n === 1],
-    ['2x (RO 1)', (n) => n === 2],
-    ['3x', (n) => n === 3],
-    ['4-5x', (n) => n >= 4 && n <= 5],
-    ['6-9x', (n) => n >= 6 && n <= 9],
-    ['10x+', (n) => n >= 10],
-  ];
+function roBucket(orders: number): number {
+  if (orders <= 3) return orders - 1;
+  if (orders <= 5) return 3;
+  return orders <= 9 ? 4 : 5;
+}
+
+/** Berapa lama customer bertahan: jarak order pertama ke order terakhir. Satu kali putaran atas daftar customer. */
+export function computeLifetime(cs: Customer[]): LifetimeStats {
+  const buckets = new Array<number>(LIFETIME_BUCKETS.length).fill(0);
+  const ro = new Array<number>(RO_BUCKETS.length).fill(0);
+  const lifetimes: number[] = [];
+  const intervals: number[] = [];
+  let totalOrders = 0;
+  for (const c of cs) {
+    totalOrders += c.orders;
+    ro[roBucket(c.orders)]++;
+    if (c.orders === 1) {
+      buckets[0]++;
+      continue;
+    }
+    lifetimes.push(c.lifetime);
+    if (c.avgInterval! > 0) intervals.push(c.avgInterval!);
+    const i = LIFETIME_LIMITS.findIndex((max) => c.lifetime < max);
+    buckets[i === -1 ? LIFETIME_BUCKETS.length - 1 : i + 1]++;
+  }
 
   return {
     customers: cs.length,
-    repeaters: repeaters.length,
-    repeatRate: cs.length ? repeaters.length / cs.length : 0,
-    avgOrders: cs.length ? cs.reduce((s, c) => s + c.orders, 0) / cs.length : 0,
+    repeaters: lifetimes.length,
+    repeatRate: cs.length ? lifetimes.length / cs.length : 0,
+    avgOrders: cs.length ? totalOrders / cs.length : 0,
     avgLifetimeRepeaters: lifetimes.length ? Math.round(lifetimes.reduce((a, b) => a + b, 0) / lifetimes.length) : 0,
     medianLifetimeRepeaters: median(lifetimes),
     medianInterval: intervals.length ? median(intervals) : null,
-    buckets: bucketDefs.map(([label, fn]) => ({ label, count: cs.filter(fn).length })),
-    roDistribution: roDefs.map(([label, fn]) => ({ label, count: cs.filter((c) => fn(c.orders)).length })),
+    buckets: LIFETIME_BUCKETS.map((label, i) => ({ label, count: buckets[i] })),
+    roDistribution: RO_BUCKETS.map((label, i) => ({ label, count: ro[i] })),
   };
+}
+
+/** Tabel cohort + statistik lama bertahan untuk filter tahun & sumber (di-cache sampai data dimuat ulang). */
+export function cohortSummary(ds: Dataset, view: CustomerView, tahun: string, sumber: string) {
+  return memo(view, `cohort|${tahun}|${sumber}`, () => {
+    const include = (c: Customer) => (!tahun || c.firstDate.startsWith(tahun)) && (!sumber || c.source === sumber);
+    return { cohort: computeCohort(ds, view, include), life: computeLifetime(view.customers.filter(include)) };
+  });
+}
+
+/** Retensi customer baru per sumber (CSO / marketplace / CRM) untuk satu tahun cohort atau semua. */
+export function sourceComparison(ds: Dataset, view: CustomerView, tahun: string) {
+  return memo(view, `cohort-sumber|${tahun}`, () =>
+    CUSTOMER_SOURCES.map((s) => {
+      const include = (c: Customer) => (!tahun || c.firstDate.startsWith(tahun)) && c.source === s.value;
+      return { ...s, cohort: computeCohort(ds, view, include), life: computeLifetime(view.customers.filter(include)) };
+    }),
+  );
 }

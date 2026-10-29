@@ -7,6 +7,7 @@
 .num { text-align: right !important; font-variant-numeric: tabular-nums; }
 .link { color: var(--primary-text); font-weight: 600; display: inline-flex; align-items: center; gap: 0.3rem; }
 .link:hover { text-decoration: underline; }
+button.link { background: none; border: 0; padding: 0; font: inherit; font-weight: 600; cursor: pointer; }
 .link.strong { color: var(--text-primary); }
 .link.back { font-size: 0.8rem; margin-bottom: 0.4rem; }
 .btn-ghost { display: inline-flex; align-items: center; gap: 0.4rem; border: 1px solid var(--border-light); }
@@ -33,6 +34,9 @@
 .data-table.compact th { padding: 0.65rem 0.9rem; white-space: nowrap; }
 .data-table.compact td { padding: 0.65rem 0.9rem; font-size: 0.83rem; vertical-align: top; }
 .row-muted td { opacity: 0.55; }
+.row-highlight td { background: var(--primary-light, var(--bg-surface)); }
+.inline-form { display: flex; gap: 0.5rem; align-items: flex-end; flex-wrap: wrap; }
+.inline-form .field { min-width: 180px; }
 .pagination { display: flex; justify-content: space-between; align-items: center; padding: 0.85rem 1.25rem; font-size: 0.82rem; color: var(--text-muted); gap: 1rem; flex-wrap: wrap; }
 .pagination > div { display: flex; gap: 0.5rem; }
 .pagination .btn-ghost { padding: 0.4rem 0.8rem; }
@@ -181,3 +185,12 @@
 .auth-brand { display: flex; flex-direction: column; align-items: center; gap: 0.6rem; margin-bottom: 0.5rem; }
 .auth-logo { width: auto; height: 120px; }
 .auth-app-name { font-size: 0.8rem; font-weight: 800; letter-spacing: 0.12em; color: var(--primary-text); text-transform: uppercase; }
+
+/* Kampanye treatment */
+.form-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; }
+.progress { height: 0.75rem; border-radius: var(--radius-full); background: var(--bg-surface); overflow: hidden; }
+.progress > div { height: 100%; border-radius: inherit; background: var(--warning); transition: width 0.3s; }
+.progress.done > div { background: var(--success); }
+.progress-meta { display: flex; justify-content: space-between; gap: 1rem; font-size: 0.78rem; color: var(--text-muted); margin-top: 0.45rem; flex-wrap: wrap; }
+.tabs { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+.tabs .btn-ghost.active { background: var(--primary-light); color: var(--primary-text); border-color: transparent; }
